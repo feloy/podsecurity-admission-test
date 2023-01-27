@@ -7,17 +7,13 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v2"
-	v1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
-	"k8s.io/pod-security-admission/admission"
 	"k8s.io/pod-security-admission/api"
-	"k8s.io/pod-security-admission/metrics"
 	"k8s.io/pod-security-admission/policy"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -51,47 +47,30 @@ func main() {
 		panic(err)
 	}
 	labels := ns.GetLabels()
-	fmt.Printf("Namespace labels: %+v\n", labels)
+	//fmt.Printf("Namespace labels: %+v\n", labels)
 
-	ns1Policy, errList := api.PolicyToEvaluate(labels, api.Policy{})
-	fmt.Printf("error #: %d\nEnforce policy: (%s, %s)\n", len(errList), ns1Policy.Enforce.Level, ns1Policy.Enforce.Version)
+	ns1Policy, _ := api.PolicyToEvaluate(labels, api.Policy{})
+	fmt.Printf("Enforce policy: (%s, %s)\n", ns1Policy.Enforce.Level, ns1Policy.Enforce.Version)
 
 	podFail, err := getPodFromFile(podFailFile)
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("%v\n", podFail)
+	//fmt.Printf("%v\n", podFail)
 
-	evaluator, err := policy.NewEvaluator(policy.DefaultChecks()) // TODO
+	evaluator, err := policy.NewEvaluator(policy.DefaultChecks())
 	if err != nil {
 		panic(err)
 	}
-	metrics := metrics.NewPrometheusRecorder(api.GetAPIVersion())
 
-	informerFactory := kubeinformers.NewSharedInformerFactory(clientset, 0 /* no resync */)
-	namespaceInformer := informerFactory.Core().V1().Namespaces()
-	namespaceLister := namespaceInformer.Lister()
-	adm := admission.Admission{
-		Evaluator:        evaluator,
-		Metrics:          metrics,
-		PodSpecExtractor: admission.DefaultPodSpecExtractor{},
-		PodLister:        admission.PodListerFromClient(clientset),
-		NamespaceGetter:  admission.NamespaceGetterFromListerAndClient(namespaceLister, clientset),
+	results := evaluator.EvaluatePod(ns1Policy.Enforce, &podFail.ObjectMeta, &podFail.Spec)
+	for _, result := range results {
+		if result.Allowed {
+			continue
+		}
+		fmt.Printf("- %s\n  %s\n", result.ForbiddenReason, result.ForbiddenDetail)
 	}
-	attrs := api.AttributesRecord{
-		Name:      podFail.GetName(),
-		Namespace: podFail.GetNamespace(),
-		Kind:      podFail.GetObjectKind().GroupVersionKind(),
-		Operation: v1.Create,
-		Object:    podFail,
-	}
-	response := adm.EvaluatePod(ctx, ns1Policy, nil, &podFail.ObjectMeta, &podFail.Spec, &attrs, true)
-	if response == nil {
-		fmt.Printf("no response")
-		os.Exit(1)
-	}
-	fmt.Printf("allowed: %v\n", response.Allowed)
 }
 
 func getConfig() (*rest.Config, error) {
